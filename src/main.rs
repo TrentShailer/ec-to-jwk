@@ -1,16 +1,16 @@
 use core::fmt;
 use std::{fs, io, path::PathBuf};
 
+use base64ct::{Base64UrlUnpadded, Encoding};
 use clap::Parser;
-use cli_helper::ReportResult;
 use openssl::{
-    base64,
     bn::{BigNum, BigNumContext},
     ec::{EcGroupRef, EcKey, PointConversionForm},
     nid::Nid,
-    sha::sha1,
+    sha::sha256,
 };
 use serde::{Deserialize, Serialize};
+use ts_rust_helper::error::ReportResult;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Jwk {
@@ -31,7 +31,7 @@ struct Cli {
     pub key: PathBuf,
 }
 
-fn main() -> ReportResult<()> {
+fn main() -> ReportResult<'static, ()> {
     let cli = Cli::parse();
 
     let public_key_pem = fs::read(cli.key).map_err(|source| Error {
@@ -58,10 +58,10 @@ fn main() -> ReportResult<()> {
             kind: ErrorKind::ExtractCoordinates { source },
         })?;
 
-    let base64_x = url_encode_base64(&base64::encode_block(&x.to_vec()));
-    let base64_y = url_encode_base64(&base64::encode_block(&y.to_vec()));
+    let base64_x = Base64UrlUnpadded::encode_string(&x.to_vec());
+    let base64_y = Base64UrlUnpadded::encode_string(&y.to_vec());
 
-    let hash = sha1(
+    let hash = sha256(
         key.public_key()
             .to_bytes(key.group(), PointConversionForm::UNCOMPRESSED, &mut ctx)
             .map_err(|source| Error {
@@ -69,7 +69,7 @@ fn main() -> ReportResult<()> {
             })?
             .as_slice(),
     );
-    let hash_base64 = url_encode_base64(&base64::encode_block(&hash));
+    let hash_base64 = Base64UrlUnpadded::encode_string(&hash);
 
     let jwk = Jwk {
         x: base64_x,
@@ -95,10 +95,6 @@ fn group_to_curve(group: &EcGroupRef) -> Option<String> {
         Nid::X9_62_PRIME256V1 => Some("P-256".to_string()),
         _ => None,
     }
-}
-
-fn url_encode_base64(base64: &str) -> String {
-    base64.replace('+', "-").replace('/', "_").replace('=', "")
 }
 
 #[derive(Debug)]
