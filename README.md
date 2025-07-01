@@ -1,6 +1,6 @@
-# EC to JWK
+# PEM params
 
-CLI for converting an EC public key to a JWK.
+CLI for converting a PEM encoded key to its parameters, generally for use as a JWK.
 
 > [!CAUTION]
 >
@@ -11,7 +11,7 @@ CLI for converting an EC public key to a JWK.
 
 ## Requirements
 
-- Perl: `wingert install StrawberryPerl.StrawberryPerl`
+- Perl: `winget install StrawberryPerl.StrawberryPerl`
 
 ## Installing
 
