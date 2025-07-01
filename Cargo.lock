@@ -144,19 +144,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ec-to-jwk"
-version = "0.3.0"
-dependencies = [
- "base64ct",
- "clap",
- "openssl",
- "serde",
- "serde_json",
- "ts-cli-helper",
- "ts-rust-helper",
-]
-
-[[package]]
 name = "foreign-types"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -265,6 +252,19 @@ dependencies = [
  "openssl-src",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "pem-params"
+version = "0.4.0"
+dependencies = [
+ "base64ct",
+ "clap",
+ "openssl",
+ "serde",
+ "serde_json",
+ "ts-cli-helper",
+ "ts-rust-helper",
 ]
 
 [[package]]

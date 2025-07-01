@@ -1,160 +1,196 @@
-use core::fmt;
-use std::{fs, io, path::PathBuf};
+use std::{fs, path::PathBuf};
 
 use base64ct::{Base64UrlUnpadded, Encoding};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use openssl::{
     bn::{BigNum, BigNumContext},
-    ec::{EcGroupRef, EcKey, PointConversionForm},
+    ec::{EcKey, EcKeyRef, PointConversionForm},
     nid::Nid,
+    pkey::{PKey, Private, Public},
+    rsa::{Rsa, RsaRef},
     sha::sha256,
 };
 use serde::{Deserialize, Serialize};
-use ts_rust_helper::error::ReportResult;
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Jwk {
-    kid: String,
-    r#use: String,
-    kty: String,
-    alg: String,
-    crv: String,
-    x: String,
-    y: String,
-}
+use ts_rust_helper::error::{IntoErrorReport, Report, ReportResult, ReportStyle};
 
 #[derive(Debug, Parser)]
-#[command(name = "ec-to-jwk")]
-/// Convert an elliptic curve public key to a JWK.
+#[command(name = "pem-params")]
+/// Extract the parameters from a PEM file
 struct Cli {
-    /// Path to the public key PEM.
-    pub key: PathBuf,
+    /// The PEM key type
+    #[clap(subcommand)]
+    pub key_type: KeyType,
+}
+
+#[derive(Debug, Subcommand)]
+enum KeyType {
+    Private {
+        /// Path to the private key PEM.
+        key: PathBuf,
+    },
+    Public {
+        /// Path to the public key PEM.
+        key: PathBuf,
+    },
 }
 
 fn main() -> ReportResult<'static, ()> {
     let cli = Cli::parse();
 
-    let public_key_pem = fs::read(cli.key).map_err(|source| Error {
-        kind: ErrorKind::ReadKeyFile { source },
-    })?;
+    match cli.key_type {
+        KeyType::Private { key } => {
+            let pem = fs::read(key).into_report(ReportStyle::Coloured, "read PEM file")?;
+            let key =
+                PKey::private_key_from_pem(&pem).into_report(ReportStyle::Coloured, "parse PEM")?;
 
-    let key = EcKey::public_key_from_pem(&public_key_pem).map_err(|source| Error {
-        kind: ErrorKind::ParsePublicKey { source },
-    })?;
+            if let Ok(ec_key) = key.ec_key() {
+                unimplemented!("The key id {:?} is not implemented", key.id())
+            } else if let Ok(rsa_key) = key.rsa() {
+                let output = RsaOutput::try_from(rsa_key.as_ref())?;
+                let json = serde_json::to_string_pretty(&output)
+                    .into_report(ReportStyle::Coloured, "serialize output")?;
+                println!("{json}");
+            } else {
+                unimplemented!("The key id {:?} is not implemented", key.id())
+            }
+        }
+        KeyType::Public { key } => {
+            let pem = fs::read(key).into_report(ReportStyle::Coloured, "read PEM file")?;
+            let key =
+                PKey::public_key_from_pem(&pem).into_report(ReportStyle::Coloured, "parse PEM")?;
 
-    let mut ctx = BigNumContext::new().map_err(|source| Error {
-        kind: ErrorKind::CreateBigNumber { source },
-    })?;
-    let mut x = BigNum::new().map_err(|source| Error {
-        kind: ErrorKind::CreateBigNumber { source },
-    })?;
-    let mut y = BigNum::new().map_err(|source| Error {
-        kind: ErrorKind::CreateBigNumber { source },
-    })?;
-
-    key.public_key()
-        .affine_coordinates(key.group(), &mut x, &mut y, &mut ctx)
-        .map_err(|source| Error {
-            kind: ErrorKind::ExtractCoordinates { source },
-        })?;
-
-    let base64_x = Base64UrlUnpadded::encode_string(&x.to_vec());
-    let base64_y = Base64UrlUnpadded::encode_string(&y.to_vec());
-
-    let hash = sha256(
-        key.public_key()
-            .to_bytes(key.group(), PointConversionForm::UNCOMPRESSED, &mut ctx)
-            .map_err(|source| Error {
-                kind: ErrorKind::GetBytes { source },
-            })?
-            .as_slice(),
-    );
-    let hash_base64 = Base64UrlUnpadded::encode_string(&hash);
-
-    let jwk = Jwk {
-        x: base64_x,
-        y: base64_y,
-        kty: "EC".to_string(),
-        alg: "ES256".to_string(),
-        crv: group_to_curve(key.group()).unwrap_or("Unknown".to_string()),
-        kid: hash_base64,
-        r#use: "sig".to_string(),
-    };
-
-    let json = serde_json::to_string_pretty(&jwk).map_err(|source| Error {
-        kind: ErrorKind::Serialize { source },
-    })?;
-
-    println!("{json}");
+            if let Ok(ec_key) = key.ec_key() {
+                let output = EcOutput::try_from(ec_key.as_ref())?;
+                let json = serde_json::to_string_pretty(&output)
+                    .into_report(ReportStyle::Coloured, "serialize output")?;
+                println!("{json}");
+            } else if let Ok(rsa_key) = key.rsa() {
+                let output = RsaOutput::try_from(rsa_key.as_ref())?;
+                let json = serde_json::to_string_pretty(&output)
+                    .into_report(ReportStyle::Coloured, "serialize output")?;
+                println!("{json}");
+            } else {
+                unimplemented!("The key id {:?} is not implemented", key.id())
+            }
+        }
+    }
 
     Ok(())
 }
 
-fn group_to_curve(group: &EcGroupRef) -> Option<String> {
-    match group.curve_name()? {
-        Nid::X9_62_PRIME256V1 => Some("P-256".to_string()),
-        _ => None,
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EcOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    d: Option<String>,
+    x: String,
+    y: String,
+    kid: String,
+    crv: String,
+    kty: String,
+    alg: String,
+}
+
+impl TryFrom<&EcKeyRef<Public>> for EcOutput {
+    type Error = Report<'static>;
+
+    fn try_from(key: &EcKeyRef<Public>) -> Result<Self, Self::Error> {
+        let mut ctx =
+            BigNumContext::new().into_report(ReportStyle::Coloured, "create big number")?;
+        let mut x = BigNum::new().into_report(ReportStyle::Coloured, "create big number")?;
+        let mut y = BigNum::new().into_report(ReportStyle::Coloured, "create big number")?;
+
+        key.public_key()
+            .affine_coordinates(key.group(), &mut x, &mut y, &mut ctx)
+            .into_report(ReportStyle::Coloured, "extract coordinates")?;
+
+        let base64_x = Base64UrlUnpadded::encode_string(&x.to_vec());
+        let base64_y = Base64UrlUnpadded::encode_string(&y.to_vec());
+
+        let hash = sha256(
+            key.public_key()
+                .to_bytes(key.group(), PointConversionForm::UNCOMPRESSED, &mut ctx)
+                .into_report(ReportStyle::Coloured, "get key bytes")?
+                .as_slice(),
+        );
+        let hash_base64 = Base64UrlUnpadded::encode_string(&hash);
+
+        let crv = match key
+            .group()
+            .curve_name()
+            .into_report(ReportStyle::Coloured, "get curve name")?
+        {
+            Nid::X9_62_PRIME256V1 => Some("P-256"), // TODO
+            _ => None,
+        };
+
+        Ok(EcOutput {
+            d: None,
+            x: base64_x,
+            y: base64_y,
+            kty: "EC".to_string(),
+            alg: "ES256".to_string(), // TODO
+            crv: crv.unwrap_or("Unknown").to_string(),
+            kid: hash_base64,
+        })
     }
 }
 
-#[derive(Debug)]
-#[non_exhaustive]
-struct Error {
-    pub kind: ErrorKind,
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RsaOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    d: Option<String>,
+    n: String,
+    e: String,
+    kid: String,
+    kty: String,
+    alg: String,
 }
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "error converting elliptic curve public key to a JWK")
+
+impl TryFrom<&RsaRef<Public>> for RsaOutput {
+    type Error = Report<'static>;
+
+    fn try_from(key: &RsaRef<Public>) -> Result<Self, Self::Error> {
+        let base64_n = Base64UrlUnpadded::encode_string(&key.n().to_vec());
+        let base64_e = Base64UrlUnpadded::encode_string(&key.e().to_vec());
+
+        let mut bytes = vec![];
+        bytes.extend_from_slice(&key.n().to_vec());
+        bytes.extend_from_slice(&key.e().to_vec());
+        let hash = sha256(&bytes);
+        let hash_base64 = Base64UrlUnpadded::encode_string(&hash);
+
+        Ok(RsaOutput {
+            d: None,
+            n: base64_n,
+            e: base64_e,
+            kty: "RSA".to_string(),
+            alg: "RS256".to_string(),
+            kid: hash_base64,
+        })
     }
 }
-impl core::error::Error for Error {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        Some(&self.kind)
-    }
-}
+impl TryFrom<&RsaRef<Private>> for RsaOutput {
+    type Error = Report<'static>;
 
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum ErrorKind {
-    #[non_exhaustive]
-    ReadKeyFile { source: io::Error },
+    fn try_from(key: &RsaRef<Private>) -> Result<Self, Self::Error> {
+        let base64_n = Base64UrlUnpadded::encode_string(&key.n().to_vec());
+        let base64_e = Base64UrlUnpadded::encode_string(&key.e().to_vec());
+        let base64_d = Base64UrlUnpadded::encode_string(&key.d().to_vec());
 
-    #[non_exhaustive]
-    ParsePublicKey { source: openssl::error::ErrorStack },
+        let mut bytes = vec![];
+        bytes.extend_from_slice(&key.n().to_vec());
+        bytes.extend_from_slice(&key.e().to_vec());
+        bytes.extend_from_slice(&key.d().to_vec());
+        let hash = sha256(&bytes);
+        let hash_base64 = Base64UrlUnpadded::encode_string(&hash);
 
-    #[non_exhaustive]
-    CreateBigNumber { source: openssl::error::ErrorStack },
-
-    #[non_exhaustive]
-    ExtractCoordinates { source: openssl::error::ErrorStack },
-
-    #[non_exhaustive]
-    GetBytes { source: openssl::error::ErrorStack },
-
-    #[non_exhaustive]
-    Serialize { source: serde_json::Error },
-}
-impl fmt::Display for ErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self {
-            Self::ReadKeyFile { .. } => write!(f, "could not read public key file"),
-            Self::ParsePublicKey { .. } => write!(f, "could not parse public key"),
-            Self::CreateBigNumber { .. } => write!(f, "could not create a BigNumber"),
-            Self::ExtractCoordinates { .. } => write!(f, "could not extract curve co-ordinates"),
-            Self::GetBytes { .. } => write!(f, "Could not convert the public key to bytes"),
-            Self::Serialize { .. } => write!(f, "could not serialize JWK"),
-        }
-    }
-}
-impl core::error::Error for ErrorKind {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match &self {
-            Self::ReadKeyFile { source, .. } => Some(source),
-            Self::ParsePublicKey { source, .. } => Some(source),
-            Self::CreateBigNumber { source, .. } => Some(source),
-            Self::ExtractCoordinates { source, .. } => Some(source),
-            Self::GetBytes { source, .. } => Some(source),
-            Self::Serialize { source, .. } => Some(source),
-        }
+        Ok(RsaOutput {
+            d: Some(base64_d),
+            n: base64_n,
+            e: base64_e,
+            kty: "RSA".to_string(),
+            alg: "RS256".to_string(),
+            kid: hash_base64,
+        })
     }
 }

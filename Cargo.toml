@@ -1,11 +1,11 @@
 [package]
 authors = ["Trent Shailer"]
-description = "CLI for converting an EC public key to a JWK"
+description = "CLI for converting a PEM public key to its parameters"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-name = "ec-to-jwk"
+name = "pem-params"
 rust-version = "1.88"
-version = "0.3.0"
+version = "0.4.0"
 
 [dependencies]
 base64ct = { version = "1.8", features = ["alloc"] }
